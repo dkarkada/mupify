@@ -5,6 +5,7 @@ import numpy as np
 def set_multiplier(layer, g):
     if not hasattr(layer, '_base_fwd'):
         layer._base_fwd = layer.forward
+    layer._multiplier = g
     layer.forward = lambda x: g*layer._base_fwd(x)
 
 def set_init_scale(layer, scale):
@@ -42,65 +43,100 @@ def set_lr(optimizer, layer, lr):
             pg['lr'] = lr
 
 # Given layer and parameterization, get layer multiplier, layer LR, and layer weight scale
-def get_param(layer_type, param, layer_din, gamma):
+def get_param(layer_type, param, layer_din, width):
     assert layer_type in ["readin", "hidden", "readout"]
-    assert param.lower() in ["stp", "mup", "ntp"]
-    
+    param = param.lower()
+    assert param in ["ntp", "mup", "mfp", "ntp-lr", "mup-lr"]
+
+    activity = np.sqrt(width) if param in ["mup", "mfp", "mup-lr"] else 1    
     if layer_type in ["readin", "hidden"]:
-        q = gamma**2/layer_din
+        q = activity**2/layer_din
     elif layer_type == "readout":
         q = 1/layer_din
     
-    if param.lower() == 'stp':
+    if param in ['mup-lr', 'ntp-lr']:
         g = 1
         lr = q
-        scale = np.sqrt(q / gamma**2)
-    elif param.lower() =='mup':
+        scale = np.sqrt(q) / activity
+    elif param == 'mup':
         g = np.sqrt(q)
         lr = 1
-        scale = 1 / gamma
-    elif param.lower() == 'ntp':
-        g = np.sqrt(q / gamma**2)
-        lr = gamma**2
+        scale = 1 / activity
+    elif param in ['mfp', 'ntp']:
+        g = np.sqrt(q / activity**2)
+        lr = activity**2
         scale = 1
-    assert np.allclose((gamma * scale)**2, lr)
-    assert np.allclose((g*scale*gamma)**2, q)
+    assert (activity * scale)**2 - lr < 1e-10
+    assert (g*scale*activity)**2 - q  < 1e-10
     return g, lr, scale
 
+# Given layer and parameterization, get layer multiplier, layer LR, and layer weight scale
+def mark_anatomy(model, verbose):
+    if hasattr(model, '_modelwidth'):
+        return
+    widths = []
+    layers = []
+    for k, v in model.named_modules():
+        if not hasattr(v, 'weight'):
+            continue
+        assert type(v) in [nn.Linear, nn.Conv2d], f"Can't handle module {k} of type {v}"
+        chan_out, chan_in = v.weight.shape[0], v.weight.shape[1]
+        if len(layers) == 0:
+            widths.append(chan_in)
+        widths.append(chan_out)
+        layers.append((k, v))
 
-def mupify(model, optimizer, readin, readout, gamma, param='mup'):
+    assert len(layers) > 1, f"Model must be deeper"    
+    layers[0][1]._layertype = "readin"
+    layers[-1][1]._layertype = "readout"
+    for i, (_, layer) in enumerate(layers[1:-1]):
+        layer._layertype = "hidden"
+    model._modelwidth = np.max(widths[1:-1])
+
+    if verbose:
+        print("== Model anatomy ==")
+        print(f"d_in = {widths[0]}")
+        print(f"d_out = {widths[-1]}")
+        print(f"widths: {widths[1:-1]}")
+        print(f"\t using width = {model._modelwidth}")
+        print(f"readin layer: {layers[0][0]}")
+        print(f"readout layer: {layers[-1][0]}")
+        print()
+
+
+def mupify(model, optimizer, param, verbose=False):
     """
-    Reinitializes a model/optimizer in-place to a chosen parameterization. Function does not return.
+    Reinitializes a model+optimizer in-place to a chosen parameterization. Function does not return.
     
     Params:
         model (nn.Module): model whose layer multipliers and init weights to mupify.
         optimizer (optim.SGD): SGD optimizer. (Other optimizers not tested and probably don't work.)
-        readin (str or nn.Module): The name of (or a pointer to) the readin layer
-        readout (str or nn.Module): The name of (or a pointer to) the readout layer
-        gamma (float): Sets the laziness/activity of the net. gamma=1 is lazy, gamma=sqrt(width) is active.
-        param (str): One of ["stp", "mup", "ntp"]. Selects one of (behaviorally-equivalent) parameterization schemes.
+        param (str): One of ["ntp", "mup", "mfp", "ntp-lr", "mup-lr"].
+        verbose (bool): If True, prints model anatomy.
     """
+    mark_anatomy(model, verbose)
     for k, v in model.named_modules():
         if type(v) == nn.ReLU:
             set_multiplier(v, np.sqrt(2))
         if not hasattr(v, 'weight'):
             continue
-        assert type(v) in [nn.Linear, nn.Conv2d], f"Can't handle module {k} of type {v}"
-        
-        if type(v) == nn.Linear:
-            _, chan_in = v.weight.shape
-            wt_d_in = chan_in
-        elif type(v) == nn.Conv2d:
-            _, chan_in, kh, kw = v.weight.shape
-            wt_d_in = chan_in * kh * kw
-            
-        layer_type = "hidden"
-        if k==readin or v==readin:
-            layer_type = "readin"
-        if k==readout or v==readout:
-            layer_type = "readout"
-
-        g, lr, scale = get_param(layer_type, param, wt_d_in, gamma)
+        wt_d_in = np.prod(v.weight.shape[1:])
+        g, lr, scale = get_param(v._layertype, param, wt_d_in, model._modelwidth)
         set_multiplier(v, g)
         set_init_scale(v, scale)
         set_lr(optimizer, v, lr)
+
+
+def rescale(model, gamma):
+    """
+    Rescales the outputs of the model by 1/gamma, i.e, gamma>1 shrinks the outputs.
+    """
+    mark_anatomy(model, verbose=False)
+    readout = None
+    for _, v in model.named_modules():
+        if hasattr(v, '_layertype') and v._layertype == "readout":
+            readout = v
+    assert hasattr(readout, '_multiplier')
+    rescale = readout._multiplier / gamma
+    readout.forward = lambda x: rescale*readout._base_fwd(x)
+        
