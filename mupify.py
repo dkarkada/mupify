@@ -70,7 +70,7 @@ def get_param(layer_type, param, layer_din, width):
     assert (g*scale*activity)**2 - q  < 1e-10
     return g, lr, scale
 
-# Given layer and parameterization, get layer multiplier, layer LR, and layer weight scale
+# Tag the readin and readout layers; compute model width and tag it to the model
 def mark_anatomy(model, verbose):
     if hasattr(model, '_modelwidth'):
         return
