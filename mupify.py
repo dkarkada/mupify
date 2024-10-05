@@ -1,12 +1,14 @@
 from torch import nn
 import torch
 import numpy as np
+import types
 
 def set_multiplier(layer, g):
     if not hasattr(layer, '_base_fwd'):
         layer._base_fwd = layer.forward
     layer._multiplier = g
-    layer.forward = lambda x: g*layer._base_fwd(x)
+    new_fwd = lambda slf, x: slf._multiplier * slf._base_fwd(x)
+    layer.forward = types.MethodType(new_fwd, layer)
 
 def set_init_scale(layer, scale):
     assert layer.weight is not None
@@ -63,7 +65,7 @@ def get_param(layer_type, param, layer_din, width):
         lr = 1
         scale = 1 / activity
     elif param in ['mfp', 'ntp']:
-        g = np.sqrt(q / activity**2)
+        g = np.sqrt(q) / activity
         lr = activity**2
         scale = 1
     assert (activity * scale)**2 - lr < 1e-10
@@ -89,7 +91,7 @@ def mark_anatomy(model, verbose):
     assert len(layers) > 1, f"Model must be deeper"    
     layers[0][1]._layertype = "readin"
     layers[-1][1]._layertype = "readout"
-    for i, (_, layer) in enumerate(layers[1:-1]):
+    for _, layer in layers[1:-1]:
         layer._layertype = "hidden"
     model._modelwidth = np.max(widths[1:-1])
 
@@ -137,6 +139,7 @@ def rescale(model, gamma):
         if hasattr(v, '_layertype') and v._layertype == "readout":
             readout = v
     assert hasattr(readout, '_multiplier')
-    rescale = readout._multiplier / gamma
-    readout.forward = lambda x: rescale*readout._base_fwd(x)
+    readout._rescale = readout._multiplier / gamma
+    new_fwd = lambda slf, x: slf._rescale * slf._base_fwd(x)
+    readout.forward = types.MethodType(new_fwd, readout)
         
