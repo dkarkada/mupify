@@ -1,6 +1,6 @@
 # mupify
 
-$\mu$P-ify your pytorch models! It's super easy: just initialize your model and SGD optimizer as you normally would, then pass them both to `mupify`. They'll be modified in-place so that the forward/backward passes reflect the $\mu$P training regime (or lazy regime if you choose)... modulo finite-width corrections. See `example.ipynb` for a tutorial.
+$\mu\mathrm{P}$-ify your pytorch models! It's super easy: just initialize your model and SGD optimizer as you normally would, then pass them both to `mupify`. They'll be modified in-place so that the forward/backward passes reflect the $\mu\mathrm{P}$ training regime (or lazy regime if you choose)... modulo finite-width corrections. See `example.ipynb` for a tutorial.
 
 Not intended for use with any of the following:
 * Adaptive optimizers. (SGD + momentum and/or weight decay are fine.)
