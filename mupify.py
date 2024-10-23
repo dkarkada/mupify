@@ -117,7 +117,7 @@ def mupify(model, optimizer, param, verbose=False):
         verbose (bool): If True, prints model anatomy.
     """
     mark_anatomy(model, verbose)
-    for k, v in model.named_modules():
+    for _, v in model.named_modules():
         if type(v) == nn.ReLU:
             set_multiplier(v, np.sqrt(2))
         if not hasattr(v, 'weight'):
